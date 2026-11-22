@@ -47,19 +47,59 @@ export class HeadCamera {
     return window.isSecureContext && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   }
 
-  /** Opens the camera and loads the detector. `onStage` is told 'camera' then 'model'. */
-  async start(onStage = () => {}) {
-    onStage('camera');
-    try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
-      });
-    } catch (e) {
-      // a device that cannot meet the preferences: take whatever camera it has
-      if (!e || (e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError')) throw e;
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+  /** Opens a camera: the one with `deviceId` if given and still present, otherwise the
+   *  front-facing one, otherwise whatever the device has. */
+  async open(deviceId) {
+    const size = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } };
+    const attempts = [{ facingMode: 'user', ...size }, true];
+    if (deviceId) attempts.unshift({ deviceId: { exact: deviceId }, ...size });
+    let failure;
+    for (const video of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio: false, video });
+      } catch (e) {
+        failure = e;
+        // only a camera that is missing or cannot meet the request is worth another try
+        if (!e || (e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError')) throw e;
+      }
     }
+    throw failure;
+  }
+
+  /** The camera in use, or null. */
+  get deviceId() {
+    const track = this.stream && this.stream.getVideoTracks()[0];
+    return track && track.getSettings ? track.getSettings().deviceId || null : null;
+  }
+
+  /** How many cameras the device offers. */
+  async cameraCount() {
+    try {
+      return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput').length;
+    } catch { return 0; }
+  }
+
+  /** Moves to the device's next camera, for phones where the first pick is not the one facing
+   *  the viewer. Resolves true if the camera changed. */
+  async switchCamera() {
+    const list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    if (list.length < 2 || !this.video) return false;
+    const current = list.findIndex((d) => d.deviceId === this.deviceId);
+    const next = list[(current + 1) % list.length];
+    const old = this.stream;
+    old.getTracks().forEach((t) => t.stop());        // phones allow one open camera at a time
+    this.stream = await this.open(next.deviceId);
+    this.video.srcObject = this.stream;
+    await this.video.play();
+    this.lastVideoTime = -1;
+    this.eyes = null;
+    return true;
+  }
+
+  /** Opens the camera and loads the detector. `onStage` is told 'camera' then 'model'. */
+  async start(onStage = () => {}, deviceId = null) {
+    onStage('camera');
+    this.stream = await this.open(deviceId);
     const video = document.createElement('video');
     video.muted = true;
     video.playsInline = true;

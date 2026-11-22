@@ -154,10 +154,11 @@ async function startTracking() {
   trackError = '';
   try {
     tracker.reset();
-    await camera.start((stage) => { trackState = stage; syncControls(); });
+    await camera.start((stage) => { trackState = stage; syncControls(); }, settings.cameraId || null);
     trackState = 'on';
     settings.tracking = true;
     save();
+    camera.cameraCount().then((n) => { $('switchCam').hidden = n < 2; });
   } catch (e) {
     camera.stop();
     const denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
@@ -308,6 +309,21 @@ $('trackMode').addEventListener('click', (e) => {
   else if (e.target.dataset.on === '0') stopTracking();
 });
 $('follow').addEventListener('click', startTracking);
+$('switchCam').addEventListener('click', async () => {
+  if (trackState !== 'on') return;
+  try {
+    if (await camera.switchCamera()) {
+      tracker.reset();
+      settings.cameraId = camera.deviceId;
+      save();
+    }
+  } catch (e) {
+    trackError = (e && e.message) || String(e);
+    stopTracking();
+    trackState = 'failed';
+    syncControls();
+  }
+});
 $('gain').addEventListener('input', (e) => { settings.gain = parseFloat(e.target.value); save(); syncControls(); });
 $('flips').addEventListener('click', (e) => {
   const key = e.target.dataset.flip;
