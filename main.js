@@ -105,11 +105,18 @@ function measure() {
 // ------------------------------------------------------------------ viewer
 
 const DEFAULT_EYE = [0, 34 * RAD, 2600];             // azimuth, elevation, distance (pt)
-const eye = DEFAULT_EYE.slice();
-let smoothedEye = DEFAULT_EYE.slice();
+// The dragged viewpoint is remembered: with tracking on it is the correction for where this
+// phone's camera really sits, which does not change between visits.
+const savedEye = Array.isArray(settings.eye) && settings.eye.length === 3 && settings.eye.every(Number.isFinite) ? settings.eye : null;
+const eye = (savedEye || DEFAULT_EYE).slice();
+let smoothedEye = eye.slice();
 let smoothedTheta = settings.hinge * RAD;
 
-function resetEye() { eye[0] = DEFAULT_EYE[0]; eye[1] = DEFAULT_EYE[1]; eye[2] = DEFAULT_EYE[2]; }
+function resetEye() {
+  eye[0] = DEFAULT_EYE[0]; eye[1] = DEFAULT_EYE[1]; eye[2] = DEFAULT_EYE[2];
+  delete settings.eye;
+  save();
+}
 
 /** Where a viewer sits for a given azimuth, elevation and distance, in stage coordinates. */
 function seatFor(e, folded, H) {
@@ -194,6 +201,7 @@ canvas.addEventListener('pointermove', (e) => {
 function endPointer(e) {
   const p = pointers.get(e.pointerId);
   pointers.delete(e.pointerId);
+  if (pointers.size === 0 && gesture) { settings.eye = eye.slice(); save(); }
   if (p && e.type === 'pointerup' && pointers.size === 0) {
     const now = performance.now();
     const quick = now - p.t0 < 280 && Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 12;
@@ -293,7 +301,7 @@ $('stageMode').addEventListener('click', (e) => {
 $('reset').addEventListener('click', resetEye);
 $('defaults').addEventListener('click', () => {
   Object.assign(settings, defaults, { tracking: settings.tracking });
-  save(); syncControls(); measure(); resetEye();
+  syncControls(); measure(); resetEye();
 });
 $('trackMode').addEventListener('click', (e) => {
   if (e.target.dataset.on === '1') startTracking();
@@ -312,7 +320,10 @@ wake();
 
 // The phone stops the camera while the page is in the background; pick it up again on return.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && trackState === 'on' && !camera.live) {
+  if (document.visibilityState !== 'visible' || trackState !== 'on') return;
+  if (camera.live) {
+    camera.video.play().catch(() => {});
+  } else {
     camera.stop();
     trackState = 'off';
     startTracking();
@@ -402,6 +413,7 @@ function draw(nowMs) {
   } else if (trackState === 'on') {
     const seen = camera.poll(nowMs);
     if (seen !== undefined) tracker.observe(seen, now);
+    else if (now - tracker.lastSeen > 1) tracker.found = false;   // frames stopped arriving
     tracked = tracker.position(theta, cameraPosition);
   }
   let target = seat;
@@ -428,7 +440,16 @@ function draw(nowMs) {
   if (trackState === 'on' && nowMs - uiRefreshed > 120) {
     uiRefreshed = nowMs;
     $('trackStatus').textContent = trackStatusText();
-    if (panel.classList.contains('open')) camera.drawPreview($('preview'));
+    if (panel.classList.contains('open')) {
+      camera.drawPreview($('preview'));
+      const v = camera.video;
+      $('trackDetails').textContent = 'Details: ' + [
+        camera.mode === 'worker' ? 'background detector' : 'detector on main thread',
+        Math.round(camera.detectMs) + ' ms per look',
+        (stats.fps || '–') + ' fps',
+        v && v.videoWidth ? 'camera ' + v.videoWidth + '×' + v.videoHeight : 'no video yet',
+      ].join(', ') + (camera.note ? ' (' + camera.note + ')' : '');
+    }
   }
   const viewer = viewerNow;
   stats.viewer = viewer;
